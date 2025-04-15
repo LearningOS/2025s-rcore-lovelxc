@@ -103,8 +103,29 @@ pub fn sys_trace(trace_request: usize, id: usize, data: usize) -> isize {
 }
 
 // YOUR JOB: Implement mmap.
-pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
+pub fn sys_mmap(start: usize, _len: usize, prot: usize) -> isize {
     trace!("kernel: sys_mmap NOT IMPLEMENTED YET!");
+    // check if `prot`` is valid
+    if (prot & (!0x7 as usize) != 0) || (prot & 0x7 == 0) {
+        return -1;
+    }
+    // check if `start`` is valid in SV39
+    let addr = start;
+    let bit_38 = (addr >> 38) & 1;
+    let high_bits = addr >> 39;
+
+    let expected_high_bits = if bit_38 == 1 { (1 << 25) - 1 } else { 0 };
+    if high_bits != expected_high_bits {
+        return -1;
+    }
+
+    let start = VirtAddr::from(start);
+    if !start.aligned() {
+        return -1;
+    }
+    let token = current_user_token();
+    let page_table = PageTable::from_token(token);
+    // 检查是否已经存在映射
     -1
 }
 
