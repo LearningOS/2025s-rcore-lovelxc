@@ -1,5 +1,14 @@
 //! Process management syscalls
-use crate::task::{change_program_brk, exit_current_and_run_next, suspend_current_and_run_next};
+use core::cmp::min;
+
+use crate::{
+    mm::{translated_byte_buffer, PTEFlags, PageTable, VirtAddr},
+    task::{
+        change_program_brk, current_user_token, exit_current_and_run_next, get_syscall_times,
+        suspend_current_and_run_next,
+    },
+    timer::get_time_us,
+};
 
 #[repr(C)]
 #[derive(Debug)]
@@ -25,16 +34,72 @@ pub fn sys_yield() -> isize {
 /// YOUR JOB: get time with second and microsecond
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
+pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
     trace!("kernel: sys_get_time");
-    -1
+    let ts_size = core::mem::size_of::<TimeVal>();
+    let bufs = translated_byte_buffer(current_user_token(), ts as *const u8, ts_size);
+    assert!(
+        bufs.len() >= 1 && bufs.len() <= 2,
+        "ts should only take 1 or 2 page(s), but got {}",
+        bufs.len()
+    );
+    let us = get_time_us();
+    let timeval = TimeVal {
+        sec: us / 1_000_000,
+        usec: us % 1_000_000,
+    };
+    // byte-by-byte copy, sth like copy_to_user in linux
+    let mut copied = 0;
+    for buf in bufs {
+        // move [timeval + copied, timeval + copied + buf.len()) to buf
+        for i in 0..min(buf.len(), ts_size - copied) {
+            unsafe {
+                *buf.get_unchecked_mut(i) = *(&timeval as *const TimeVal as *const u8).add(copied)
+            };
+            copied += 1;
+        }
+    }
+    assert_eq!(
+        copied, ts_size,
+        "copied {} bytes, but should copy {} bytes",
+        copied, ts_size
+    );
+    0
 }
 
 /// TODO: Finish sys_trace to pass testcases
 /// HINT: You might reimplement it with virtual memory management.
-pub fn sys_trace(_trace_request: usize, _id: usize, _data: usize) -> isize {
+pub fn sys_trace(trace_request: usize, id: usize, data: usize) -> isize {
     trace!("kernel: sys_trace");
-    -1
+    let helper = |flag| {
+        let token = current_user_token();
+        let page_table = PageTable::from_token(token);
+        let vpn = VirtAddr::from(id).floor();
+        if let Some(pte) = page_table.translate(vpn) {
+            if !pte.is_valid() || ((pte.flags() & flag) == PTEFlags::empty()) {
+                return -1;
+            }
+        } else {
+            return -1;
+        }
+        let mut bufs = translated_byte_buffer(token, id as *const u8, 1);
+        assert_eq!(bufs.len(), 1);
+        assert!(bufs[0].len() >= 1);
+        match flag {
+            PTEFlags::R => bufs[0][0] as isize,
+            PTEFlags::W => {
+                bufs[0][0] = data as u8;
+                0
+            }
+            _ => panic!("Invalid flag"),
+        }
+    };
+    match trace_request {
+        0 => helper(PTEFlags::R),
+        1 => helper(PTEFlags::W),
+        2 => get_syscall_times(id) as isize,
+        _ => -1,
+    }
 }
 
 // YOUR JOB: Implement mmap.

@@ -202,3 +202,17 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
 }
+
+/// Trace the syscall with `syscall_id`
+pub fn trace_syscall(syscall_id: usize) {
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+    inner.tasks[current].sys_trace_info[syscall_id] += 1;
+}
+
+/// Get syscall times via `syscall_id`
+pub fn get_syscall_times(syscall_id: usize) -> u32 {
+    let inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+    inner.tasks[current].sys_trace_info[syscall_id]
+}
