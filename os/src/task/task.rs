@@ -236,6 +236,22 @@ impl TaskControlBlock {
             None
         }
     }
+    /// insert frame
+    pub fn insert_frames(
+        &mut self,
+        start_va: VirtAddr,
+        end_va: VirtAddr,
+        permission: MapPermission,
+    ) {
+        self.memory_set
+            .insert_framed_area(start_va, end_va, permission);
+    }
+    /// unmap frame
+    pub fn unmap_frames(&mut self, start_va: VirtAddr, end_va: VirtAddr) -> bool {
+        let start_vpn = start_va.floor();
+        let end_vpn = end_va.ceil();
+        self.memory_set.unmap_frames(start_vpn, end_vpn)
+    }
 }
 
 #[derive(Copy, Clone, PartialEq)]
