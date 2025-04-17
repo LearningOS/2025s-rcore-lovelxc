@@ -15,6 +15,7 @@ mod switch;
 mod task;
 
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::{MapPermission, VirtAddr};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
@@ -133,6 +134,25 @@ impl TaskManager {
         inner.tasks[cur].change_program_brk(size)
     }
 
+    /// Insert frame into the current 'Running' task's program
+    pub fn insert_current_frame(
+        &self,
+        start_va: VirtAddr,
+        end_va: VirtAddr,
+        permission: MapPermission,
+    ) {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].insert_frames(start_va, end_va, permission);
+    }
+
+    /// Unmap frames in the current 'Running' task's program
+    pub fn munmap_current_frames(&self, start_va: VirtAddr, end_va: VirtAddr) -> bool {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].unmap_frames(start_va, end_va)
+    }
+
     /// Switch current `Running` task to the task we have found,
     /// or there is no `Ready` task and we can exit with all applications completed
     fn run_next_task(&self) {
@@ -215,4 +235,14 @@ pub fn get_syscall_times(syscall_id: usize) -> u32 {
     let inner = TASK_MANAGER.inner.exclusive_access();
     let current = inner.current_task;
     inner.tasks[current].sys_trace_info[syscall_id]
+}
+
+/// Insert frame into the current 'Running' task's program
+pub fn insert_current_frame(start_va: VirtAddr, end_va: VirtAddr, permission: MapPermission) {
+    TASK_MANAGER.insert_current_frame(start_va, end_va, permission)
+}
+
+/// Unmap frames in the current 'Running' task's program
+pub fn munmap_current_frames(start_va: VirtAddr, end_va: VirtAddr) -> bool {
+    TASK_MANAGER.munmap_current_frames(start_va, end_va)
 }
