@@ -1,16 +1,19 @@
 //! Process management syscalls
+use core::cmp::min;
+
 use alloc::sync::Arc;
 
 use crate::{
-    mm::{
-        translated_byte_buffer, va_valid, MapPermission, PTEFlags, PageTable, VPNRange, VirtAddr,
-    },
     loader::get_app_data_by_name,
-    mm::{translated_refmut, translated_str},
+    mm::{
+        translated_byte_buffer, translated_refmut, translated_str, va_valid, MapPermission,
+        PageTable, VPNRange, VirtAddr,
+    },
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
-        insert_current_frame, munmap_current_frames, suspend_current_and_run_next,
+        suspend_current_and_run_next,
     },
+    timer::get_time_us,
 };
 
 #[repr(C)]
@@ -70,7 +73,11 @@ pub fn sys_exec(path: *const u8) -> isize {
 /// If there is not a child process whose pid is same as given, return -1.
 /// Else if there is a child process but it is still running, return -2.
 pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
-    trace!("kernel::pid[{}] sys_waitpid [{}]", current_task().unwrap().pid.0, pid);
+    trace!(
+        "kernel::pid[{}] sys_waitpid [{}]",
+        current_task().unwrap().pid.0,
+        pid
+    );
     let task = current_task().unwrap();
     // find a child process
 
@@ -108,21 +115,6 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
 /// YOUR JOB: get time with second and microsecond
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
-}
-
-/// YOUR JOB: Implement mmap.
-pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
 pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
     trace!("kernel: sys_get_time");
     let ts_size = core::mem::size_of::<TimeVal>();
@@ -154,53 +146,6 @@ pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
         copied, ts_size
     );
     0
-}
-
-/// TODO: Finish sys_trace to pass testcases
-/// HINT: You might reimplement it with virtual memory management.
-pub fn sys_trace(trace_request: usize, id: usize, data: usize) -> isize {
-    trace!(
-        "kernel: sys_trace, trace_request: {}, id: {}, data: {}",
-        trace_request,
-        id,
-        data
-    );
-    let helper = |flag| {
-        // check if `id` is valid in SV39
-        if !va_valid(id) {
-            debug!("[sys_trace]: id(addr):{:x} is invalid in SV39", id);
-            return -1;
-        }
-        let token = current_user_token();
-        let page_table = PageTable::from_token(token);
-        let vpn = VirtAddr::from(id).floor();
-        if let Some(pte) = page_table.translate(vpn) {
-            if !pte.is_valid() || ((pte.flags() & flag) == PTEFlags::empty()) {
-                debug!("[sys_trace]: vpn {:?} is invalid or not allowed", vpn);
-                return -1;
-            }
-        } else {
-            debug!("[sys_trace]: vpn {:?} is not in page table", vpn);
-            return -1;
-        }
-        let mut bufs = translated_byte_buffer(token, id as *const u8, 1);
-        assert_eq!(bufs.len(), 1);
-        assert!(bufs[0].len() >= 1);
-        match flag {
-            PTEFlags::R => bufs[0][0] as isize,
-            PTEFlags::W => {
-                bufs[0][0] = data as u8;
-                0
-            }
-            _ => panic!("Invalid flag"),
-        }
-    };
-    match trace_request {
-        0 => helper(PTEFlags::R),
-        1 => helper(PTEFlags::W),
-        2 => get_syscall_times(id) as isize,
-        _ => -1,
-    }
 }
 
 // YOUR JOB: Implement mmap.
@@ -250,7 +195,9 @@ pub fn sys_mmap(start: usize, len: usize, prot: usize) -> isize {
         permission |= MapPermission::X;
     }
     debug!("[sys_mmap]: start:{:?}, end:{:?}", start_va, end_va);
-    insert_current_frame(start_va, end_va, permission);
+    current_task()
+        .unwrap()
+        .insert_frames(start_va, end_va, permission);
     0
 }
 
@@ -271,7 +218,7 @@ pub fn sys_munmap(start: usize, len: usize) -> isize {
     // unmap the range [start, start + len)
     let end_va = VirtAddr::from(start + len);
     debug!("[sys_munmap]: start:{:?}, end:{:?}", start_va, end_va);
-    match munmap_current_frames(start_va, end_va) {
+    match current_task().unwrap().unmap_frames(start_va, end_va) {
         true => 0,
         false => -1,
     }

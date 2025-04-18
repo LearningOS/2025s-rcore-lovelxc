@@ -2,7 +2,7 @@
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
 use crate::config::TRAP_CONTEXT_BASE;
-use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
+use crate::mm::{MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
@@ -237,20 +237,18 @@ impl TaskControlBlock {
         }
     }
     /// insert frame
-    pub fn insert_frames(
-        &mut self,
-        start_va: VirtAddr,
-        end_va: VirtAddr,
-        permission: MapPermission,
-    ) {
-        self.memory_set
+    pub fn insert_frames(&self, start_va: VirtAddr, end_va: VirtAddr, permission: MapPermission) {
+        self.inner_exclusive_access()
+            .memory_set
             .insert_framed_area(start_va, end_va, permission);
     }
     /// unmap frame
-    pub fn unmap_frames(&mut self, start_va: VirtAddr, end_va: VirtAddr) -> bool {
+    pub fn unmap_frames(&self, start_va: VirtAddr, end_va: VirtAddr) -> bool {
         let start_vpn = start_va.floor();
         let end_vpn = end_va.ceil();
-        self.memory_set.unmap_frames(start_vpn, end_vpn)
+        self.inner_exclusive_access()
+            .memory_set
+            .unmap_frames(start_vpn, end_vpn)
     }
 }
 
