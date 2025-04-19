@@ -27,10 +27,39 @@
 
 ## stride 调度算法
 
+首先为 TaskControlBlock 添加了 stride 和 priority 的字段以及对应的 get/set 方法。
+同时添加了 `sys_set_priority` 系统调用，并修改了 TaskManager 的 `fetch` 函数，使其能够根据文档中的 stride 调度算法选择进程。
+
 # 问答题
 
 ## 第 1 问
 
+实际情况是轮到 p2 执行，因为 p2.stride (250) 加上 10 后会溢出，变为 4。
+
 ## 第 2 问
 
+考虑极端情况，在进程优先级全部都为 2 的情况下，那么所有进程的 pass 均为 BigStride / 2，很容易推算出 `STRIDE_MAX – STRIDE_MIN == BigStride / 2`。如果存在优先级大于 2 的进程，那么就会出现更小的 pass，从而
+`STRIDE_MAX – STRIDE_MIN < BigStride / 2`。
+
 ## 第 3 问
+
+看不懂 guide 在说什么，根据自己的猜测来写了。
+
+```rust
+fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    // 将 u8 转换为 i8 的语义：>=128 视为负数
+    let a = if self.0 < 128 {
+        self.0 as i16 // 正数
+    } else {
+        (self.0 as i16) - 256 // 负数(例如 128u8 → -128i16)
+    };
+    let b = if other.0 < 128 {
+        other.0 as i16
+    } else {
+        (other.0 as i16) - 256
+    };
+
+    // 直接比较转换后的值
+    a.partial_cmp(&b)
+}
+```

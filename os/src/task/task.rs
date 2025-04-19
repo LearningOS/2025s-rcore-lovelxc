@@ -34,6 +34,26 @@ impl TaskControlBlock {
         let inner = self.inner_exclusive_access();
         inner.memory_set.token()
     }
+    /// Get the stride
+    pub fn get_stride(&self) -> usize {
+        let inner = self.inner_exclusive_access();
+        inner.stride
+    }
+    /// Set the stride
+    pub fn set_stride(&self, stride: usize) {
+        let mut inner = self.inner_exclusive_access();
+        inner.stride = stride;
+    }
+    /// Get the priority
+    pub fn get_priority(&self) -> usize {
+        let inner = self.inner_exclusive_access();
+        inner.priority
+    }
+    /// Set the priority
+    pub fn set_priority(&self, prio: usize) {
+        let mut inner = self.inner_exclusive_access();
+        inner.priority = prio;
+    }
 }
 
 pub struct TaskControlBlockInner {
@@ -68,6 +88,12 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// Stride for scheduling
+    pub stride: usize,
+
+    /// Priority for scheduling
+    pub priority: usize,
 }
 
 impl TaskControlBlockInner {
@@ -118,6 +144,8 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    stride: 0,
+                    priority: 16,
                 })
             },
         };
@@ -191,6 +219,8 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    stride: 0,
+                    priority: 16,
                 })
             },
         });
@@ -236,6 +266,8 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    stride: 0,
+                    priority: 16,
                 })
             },
         });
