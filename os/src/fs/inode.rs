@@ -134,6 +134,15 @@ pub fn linkat_file(old_path: &str, new_path: &str) -> isize {
     }
 }
 
+/// unlink a file(create a hard link)
+pub fn unlinkat_file(path: &str) -> isize {
+    if ROOT_INODE.unlink(path) {
+        0
+    } else {
+        -1
+    }
+}
+
 impl File for OSInode {
     fn readable(&self) -> bool {
         self.readable

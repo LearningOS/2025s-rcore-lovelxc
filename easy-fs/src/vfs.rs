@@ -112,15 +112,15 @@ impl Inode {
             .modify(new_inode_block_offset, |new_inode: &mut DiskInode| {
                 new_inode.initialize(DiskInodeType::File);
             });
-        self.modify_disk_inode(|root_inode| {
+        self.modify_disk_inode(|disk_inode| {
             // append file in the dirent
-            let file_count = (root_inode.size as usize) / DIRENT_SZ;
+            let file_count = (disk_inode.size as usize) / DIRENT_SZ;
             let new_size = (file_count + 1) * DIRENT_SZ;
             // increase size
-            self.increase_size(new_size as u32, root_inode, &mut fs);
+            self.increase_size(new_size as u32, disk_inode, &mut fs);
             // write dirent
             let dirent = DirEntry::new(name, new_inode_id);
-            root_inode.write_at(
+            disk_inode.write_at(
                 file_count * DIRENT_SZ,
                 dirent.as_bytes(),
                 &self.block_device,
@@ -190,36 +190,82 @@ impl Inode {
         if let Some(old_inode) =
             self.read_disk_inode(|disk_inode| self.find_inode_id(old_path, disk_inode))
         {
-            // 创建一个新文件，但不分配实际的数据块
-            let new_inode_id = fs.alloc_inode();
-            let (new_inode_block_id, new_inode_block_offset) = fs.get_disk_inode_pos(new_inode_id);
+            // 一开始是创建了一个新的inode，但在写unlink的时候，发现不用
+            // 在目录项那边新加一个就行
             let (old_inode_block_id, old_inode_block_offset) = fs.get_disk_inode_pos(old_inode);
-            // 感觉这个写法很抽象
-            get_block_cache(new_inode_block_id as usize, Arc::clone(&self.block_device))
+            get_block_cache(old_inode_block_id as usize, Arc::clone(&self.block_device))
                 .lock()
-                .modify(new_inode_block_offset, |new_inode: &mut DiskInode| {
-                    // new_inode 的内容应该与旧的完全一致
-                    get_block_cache(old_inode_block_id as usize, Arc::clone(&self.block_device))
-                        .lock()
-                        .modify(old_inode_block_offset, |old_inode: &mut DiskInode| {
-                            old_inode.links_count += 1;
-                            new_inode.copy_from(old_inode);
-                        });
+                .modify(old_inode_block_offset, |old_inode: &mut DiskInode| {
+                    // 增加一个硬链接数
+                    old_inode.links_count += 1;
                 });
             // 读取当前目录项的磁盘索引节点
-            self.modify_disk_inode(|root_inode| {
+            self.modify_disk_inode(|disk_inode| {
                 // 先增加目录项的大小
-                let file_count = (root_inode.size as usize) / DIRENT_SZ;
+                let file_count = (disk_inode.size as usize) / DIRENT_SZ;
                 let new_size = (file_count + 1) * DIRENT_SZ;
                 // 增加目录项的大小
-                self.increase_size(new_size as u32, root_inode, &mut fs);
-                let new_dirent = DirEntry::new(new_path, new_inode_id);
+                self.increase_size(new_size as u32, disk_inode, &mut fs);
+                let new_dirent = DirEntry::new(new_path, old_inode);
                 // 写入新的目录项
-                root_inode.write_at(
+                disk_inode.write_at(
                     file_count * DIRENT_SZ,
                     new_dirent.as_bytes(),
                     &self.block_device,
                 );
+            });
+            block_cache_sync_all();
+            return true;
+        } else {
+            return false;
+        }
+    }
+    /// Unlink a file to current inode
+    pub fn unlink(&self, path: &str) -> bool {
+        let mut fs = self.fs.lock();
+        // 先获取旧的目录项内容
+        if let Some(inode) = self.read_disk_inode(|disk_inode| self.find_inode_id(path, disk_inode))
+        {
+            let (block_id, block_offset) = fs.get_disk_inode_pos(inode);
+            get_block_cache(block_id as usize, Arc::clone(&self.block_device))
+                .lock()
+                .modify(block_offset, |disk_inode: &mut DiskInode| {
+                    // clear the data block if it's last link
+                    if disk_inode.links_count == 1 {
+                        // 感觉性能很差。。，因为还要find，完全没必要其实hh
+                        self.find(path).unwrap().clear();
+                        return;
+                    }
+                    disk_inode.links_count -= 1;
+                });
+            // 删掉这个目录项，并用最后一个目录项来填充他，这样就不用全部移动了
+            self.modify_disk_inode(|disk_inode| {
+                // delete file in the dirent
+                let file_count = (disk_inode.size as usize) / DIRENT_SZ;
+                let mut dirent = DirEntry::empty();
+                let idx = (0..file_count).find(|i| {
+                    assert_eq!(
+                        disk_inode.read_at(
+                            DIRENT_SZ * i,
+                            dirent.as_bytes_mut(),
+                            &self.block_device,
+                        ),
+                        DIRENT_SZ,
+                    );
+                    dirent.name() == path
+                });
+                // 肯定能找到，找不到说明磁盘盘有问题了
+                assert!(idx.is_some());
+                let idx = idx.unwrap();
+                // 读取最后一个目录项
+                disk_inode.read_at(
+                    DIRENT_SZ * (file_count - 1),
+                    dirent.as_bytes_mut(),
+                    &self.block_device,
+                );
+                // 写到要删除的地方
+                disk_inode.write_at(DIRENT_SZ * idx, dirent.as_bytes(), &self.block_device);
+                disk_inode.size -= DIRENT_SZ as u32;
             });
             block_cache_sync_all();
             return true;
