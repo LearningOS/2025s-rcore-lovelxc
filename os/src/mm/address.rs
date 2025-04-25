@@ -288,3 +288,13 @@ where
 }
 /// a simple range structure for virtual page number
 pub type VPNRange = SimpleRange<VirtPageNum>;
+/// check if `addr` is valid in SV39
+pub fn va_valid(addr: usize) -> bool {
+    let bit_38 = (addr >> 38) & 1;
+    let high_bits = addr >> 39;
+    let expected_high_bits = if bit_38 == 1 { (1 << 25) - 1 } else { 0 };
+    if high_bits != expected_high_bits {
+        return false;
+    }
+    true
+}

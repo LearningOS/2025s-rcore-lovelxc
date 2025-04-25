@@ -4,11 +4,14 @@ use alloc::sync::Arc;
 
 use crate::{
     fs::{open_file, OpenFlags},
-    mm::{translated_refmut, translated_str},
+    mm::{
+        translated_refmut, translated_str, va_valid, MapPermission, PageTable, VPNRange, VirtAddr,
+    },
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
         suspend_current_and_run_next,
     },
+    timer::get_time_us,
 };
 
 #[repr(C)]
@@ -105,30 +108,93 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
 /// YOUR JOB: get time with second and microsecond
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
+pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
     trace!(
         "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    let us = get_time_us();
+    *translated_refmut(current_user_token(), ts as *mut TimeVal) = TimeVal {
+        sec: us / 1_000_000,
+        usec: us % 1_000_000,
+    };
+    0
 }
 
-/// YOUR JOB: Implement mmap.
-pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+// YOUR JOB: Implement mmap.
+pub fn sys_mmap(start: usize, len: usize, prot: usize) -> isize {
+    trace!("kernel: sys_mmap");
+    // check if `prot` is valid
+    if (prot & (!0x7 as usize) != 0) || (prot & 0x7 == 0) {
+        debug!("[sys_mmap]: prot:{} is invalid", prot);
+        return -1;
+    }
+    // check if `start` is valid in SV39
+    if !va_valid(start) {
+        debug!("[sys_mmap]: start:{:x} is invalid in SV39", start);
+        return -1;
+    }
+    // check if `start` is aligned
+    let start_va = VirtAddr::from(start);
+    if !start_va.aligned() {
+        debug!("[sys_mmap]: start:{} is not aligned", start);
+        return -1;
+    }
+    // Because `MapArea::new` does not check,
+    // we need to manually verify that there are no mapped pages within the range [start, start + len)
+    let end_va = VirtAddr::from(start + len);
+    let start_vpn = start_va.floor();
+    let end_vpn = end_va.ceil();
+    let token = current_user_token();
+    let page_table = PageTable::from_token(token);
+    let has_mapping = VPNRange::new(start_vpn, end_vpn).into_iter().any(|vpn| {
+        page_table
+            .translate(vpn)
+            .map_or(false, |pte| pte.is_valid())
+    });
+    if has_mapping {
+        debug!("[sys_mmap]: has mapping");
+        return -1;
+    }
+    // Ok, we can insert frame into current task!
+    let mut permission = MapPermission::U;
+    if prot & 0x1 != 0 {
+        permission |= MapPermission::R;
+    }
+    if prot & 0x2 != 0 {
+        permission |= MapPermission::W;
+    }
+    if prot & 0x4 != 0 {
+        permission |= MapPermission::X;
+    }
+    debug!("[sys_mmap]: start:{:?}, end:{:?}", start_va, end_va);
+    current_task()
+        .unwrap()
+        .insert_frames(start_va, end_va, permission);
+    0
 }
 
-/// YOUR JOB: Implement munmap.
-pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+// YOUR JOB: Implement munmap.
+pub fn sys_munmap(start: usize, len: usize) -> isize {
+    trace!("kernel: sys_munmap");
+    // check if `start` is valid in SV39
+    if !va_valid(start) {
+        debug!("[sys_munmap]: start:{:x} is invalid in SV39", start);
+        return -1;
+    }
+    // check if `start` is aligned
+    let start_va = VirtAddr::from(start);
+    if !start_va.aligned() {
+        debug!("[sys_munmap]: start:{} is not aligned", start);
+        return -1;
+    }
+    // unmap the range [start, start + len)
+    let end_va = VirtAddr::from(start + len);
+    debug!("[sys_munmap]: start:{:?}, end:{:?}", start_va, end_va);
+    match current_task().unwrap().unmap_frames(start_va, end_va) {
+        true => 0,
+        false => -1,
+    }
 }
 
 /// change data segment size
@@ -143,12 +209,20 @@ pub fn sys_sbrk(size: i32) -> isize {
 
 /// YOUR JOB: Implement spawn.
 /// HINT: fork + exec =/= spawn
-pub fn sys_spawn(_path: *const u8) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+pub fn sys_spawn(path: *const u8) -> isize {
+    trace!("kernel:pid[{}] sys_spawn", current_task().unwrap().pid.0);
+    let token = current_user_token();
+    let path = translated_str(token, path);
+    if let Some(app_inode) = open_file(path.as_str(), OpenFlags::RDONLY) {
+        let all_data = app_inode.read_all();
+        let task = current_task().unwrap();
+        let new_task = task.spawn(all_data.as_slice());
+        let new_pid = new_task.pid.0 as isize;
+        add_task(new_task);
+        new_pid
+    } else {
+        -1
+    }
 }
 
 // YOUR JOB: Set task priority.
