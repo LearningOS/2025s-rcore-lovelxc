@@ -222,7 +222,7 @@ impl Inode {
     }
     /// Unlink a file to current inode
     pub fn unlink(&self, path: &str) -> bool {
-        let mut fs = self.fs.lock();
+        let fs = self.fs.lock();
         // 先获取旧的目录项内容
         if let Some(inode) = self.read_disk_inode(|disk_inode| self.find_inode_id(path, disk_inode))
         {

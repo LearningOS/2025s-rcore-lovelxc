@@ -100,14 +100,6 @@ impl DiskInode {
         self.type_ = type_;
         self.links_count = 1;
     }
-    pub fn copy_from(&mut self, other: &Self) {
-        self.size = other.size;
-        self.direct.copy_from_slice(&other.direct);
-        self.indirect1 = other.indirect1;
-        self.indirect2 = other.indirect2;
-        self.type_ = other.type_;
-        self.links_count = other.links_count;
-    }
     /// Whether this inode is a directory
     pub fn is_dir(&self) -> bool {
         self.type_ == DiskInodeType::Directory
