@@ -222,7 +222,7 @@ impl Inode {
     }
     /// Unlink a file to current inode
     pub fn unlink(&self, path: &str) -> bool {
-        let fs = self.fs.lock();
+        let mut fs = self.fs.lock();
         // 先获取旧的目录项内容
         if let Some(inode) = self.read_disk_inode(|disk_inode| self.find_inode_id(path, disk_inode))
         {
@@ -232,8 +232,15 @@ impl Inode {
                 .modify(block_offset, |disk_inode: &mut DiskInode| {
                     // clear the data block if it's last link
                     if disk_inode.links_count == 1 {
-                        // 感觉性能很差。。，因为还要find，完全没必要其实hh
-                        self.find(path).unwrap().clear();
+                        // 从 clear 里面抄过来
+                        let size = disk_inode.size;
+                        let data_blocks_dealloc = disk_inode.clear_size(&self.block_device);
+                        assert!(
+                            data_blocks_dealloc.len() == DiskInode::total_blocks(size) as usize
+                        );
+                        for data_block in data_blocks_dealloc.into_iter() {
+                            fs.dealloc_data(data_block);
+                        }
                         return;
                     }
                     disk_inode.links_count -= 1;
