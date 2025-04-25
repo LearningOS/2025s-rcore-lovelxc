@@ -183,4 +183,62 @@ impl Inode {
         });
         block_cache_sync_all();
     }
+    /// Link a file to current inode
+    pub fn link(&self, old_path: &str, new_path: &str) -> bool {
+        let mut fs = self.fs.lock();
+        // 先获取旧的目录项内容
+        if let Some(old_inode) =
+            self.read_disk_inode(|disk_inode| self.find_inode_id(old_path, disk_inode))
+        {
+            // 创建一个新文件，但不分配实际的数据块
+            let new_inode_id = fs.alloc_inode();
+            let (new_inode_block_id, new_inode_block_offset) = fs.get_disk_inode_pos(new_inode_id);
+            let (old_inode_block_id, old_inode_block_offset) = fs.get_disk_inode_pos(old_inode);
+            // 感觉这个写法很抽象
+            get_block_cache(new_inode_block_id as usize, Arc::clone(&self.block_device))
+                .lock()
+                .modify(new_inode_block_offset, |new_inode: &mut DiskInode| {
+                    // new_inode 的内容应该与旧的完全一致
+                    get_block_cache(old_inode_block_id as usize, Arc::clone(&self.block_device))
+                        .lock()
+                        .modify(old_inode_block_offset, |old_inode: &mut DiskInode| {
+                            old_inode.links_count += 1;
+                            new_inode.copy_from(old_inode);
+                        });
+                });
+            // 读取当前目录项的磁盘索引节点
+            self.modify_disk_inode(|root_inode| {
+                // 先增加目录项的大小
+                let file_count = (root_inode.size as usize) / DIRENT_SZ;
+                let new_size = (file_count + 1) * DIRENT_SZ;
+                // 增加目录项的大小
+                self.increase_size(new_size as u32, root_inode, &mut fs);
+                let new_dirent = DirEntry::new(new_path, new_inode_id);
+                // 写入新的目录项
+                root_inode.write_at(
+                    file_count * DIRENT_SZ,
+                    new_dirent.as_bytes(),
+                    &self.block_device,
+                );
+            });
+            block_cache_sync_all();
+            return true;
+        } else {
+            return false;
+        }
+    }
+    /// get stat of current inode
+    pub fn get_stat(&self) -> (u64, u32, u32) {
+        let fs = self.fs.lock();
+        let inode_id = fs.get_inode_id(self.block_id, self.block_offset);
+        self.read_disk_inode(|disk_inode| {
+            let mut inode_type: u32 = 0;
+            if disk_inode.is_dir() {
+                inode_type = 1;
+            } else if disk_inode.is_file() {
+                inode_type = 2;
+            }
+            (inode_id as u64, inode_type, disk_inode.links_count)
+        })
+    }
 }
