@@ -49,6 +49,15 @@ pub struct ProcessControlBlockInner {
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+    /// deadlock detection related
+    pub deadlock_detection_enabled: bool,
+    /// resource allocation matrix
+    pub mutex_allocation: Vec<Vec<usize>>,
+    pub mutex_need: Vec<Vec<usize>>,
+    pub sem_allocation: Vec<Vec<usize>>,
+    pub sem_need: Vec<Vec<usize>>,
+    pub mutex_work: Vec<usize>,
+    pub sem_work: Vec<usize>,
 }
 
 impl ProcessControlBlockInner {
@@ -81,6 +90,94 @@ impl ProcessControlBlockInner {
     /// get a task with tid in this process
     pub fn get_task(&self, tid: usize) -> Arc<TaskControlBlock> {
         self.tasks[tid].as_ref().unwrap().clone()
+    }
+    /// 检测系统是否处于安全状态
+    pub fn is_safe_state(&self, mode: i32) -> bool {
+        let n = self.thread_count();
+        let mut finish = Vec::<bool>::new();
+        finish.resize(n, false);
+        let mut safety_threads = 0; // 安全线程数
+        for i in 0..n {
+            if self.tasks[i].is_none() {
+                finish[i] = true; // 线程不存在
+                safety_threads += 1;
+            }
+        }
+        // mutex 的
+        if mode == 1 {
+            let m = self.mutex_list.len();
+            let mut work = self.mutex_work.clone();
+            let need = &self.mutex_need;
+            let allocation = &self.mutex_allocation;
+            assert!(n == need.len());
+            assert!(m == work.len() && m == need[0].len());
+            trace!("kernel: is_safe_state n[{}] m[{}]", n, m);
+            while safety_threads < n {
+                let mut found = false;
+                for i in 0..n {
+                    if !finish[i] {
+                        let mut satify = true;
+                        for j in 0..m {
+                            if need[i][j] > work[j] {
+                                satify = false;
+                                break;
+                            }
+                        }
+                        if satify {
+                            for j in 0..m {
+                                work[j] += allocation[i][j];
+                            }
+                            finish[i] = true;
+                            found = true;
+                            safety_threads += 1;
+                        }
+                    }
+                }
+                if !found && finish.iter().any(|&f| !f) {
+                    // 如果没有找到可以满足的线程，并且还有线程没有完成
+                    trace!("kernel: is_safe_state mutex deadlock detected");
+                    return false; // 死锁
+                }
+            }
+            // 全部都是安全的
+            return true;
+        } else {
+            let m = self.semaphore_list.len();
+            let mut work = self.sem_work.clone();
+            let need = &self.sem_need;
+            let allocation = &self.sem_allocation;
+            assert!(n == need.len());
+            assert!(m == work.len() && m == need[0].len());
+            while safety_threads < n {
+                let mut found = false;
+                for i in 0..n {
+                    if !finish[i] {
+                        let mut satify = true;
+                        for j in 0..m {
+                            if need[i][j] > work[j] {
+                                satify = false;
+                                break;
+                            }
+                        }
+                        if satify {
+                            for j in 0..m {
+                                work[j] += allocation[i][j];
+                            }
+                            finish[i] = true;
+                            found = true;
+                            safety_threads += 1;
+                        }
+                    }
+                }
+                if !found && finish.iter().any(|&f| !f) {
+                    // 如果没有找到可以满足的线程，并且还有线程没有完成
+                    trace!("kernel: is_safe_state mutex deadlock detected");
+                    return false;
+                }
+            }
+            // 全部都是安全的
+            return true;
+        }
     }
 }
 
@@ -119,6 +216,13 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_detection_enabled: false,
+                    mutex_allocation: Vec::new(),
+                    mutex_need: Vec::new(),
+                    sem_allocation: Vec::new(),
+                    sem_need: Vec::new(),
+                    mutex_work: Vec::new(),
+                    sem_work: Vec::new(),
                 })
             },
         });
@@ -245,6 +349,13 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_detection_enabled: false,
+                    mutex_allocation: Vec::new(),
+                    mutex_need: Vec::new(),
+                    sem_allocation: Vec::new(),
+                    sem_need: Vec::new(),
+                    mutex_work: Vec::new(),
+                    sem_work: Vec::new(),
                 })
             },
         });
@@ -281,5 +392,83 @@ impl ProcessControlBlock {
     /// get pid
     pub fn getpid(&self) -> usize {
         self.pid.0
+    }
+    ///
+    pub fn vec_sync(&self) {
+        let mut process_inner = self.inner_exclusive_access();
+        if process_inner.deadlock_detection_enabled {
+            // 根据进程中的资源情况初始化矩阵
+            let n = process_inner.thread_count(); // 线程数
+                                                  // 下面的数量应该是0
+            let m_mutex = process_inner.mutex_list.len(); // 互斥锁资源数
+            let m_sem = process_inner.semaphore_list.len(); // 信号量资源数
+
+            // 初始化矩阵，不能用 vec! 宏
+            while process_inner.mutex_allocation.len() < n {
+                process_inner
+                    .mutex_allocation
+                    .push(Vec::with_capacity(m_mutex));
+            }
+            for i in 0..n {
+                if m_mutex > process_inner.mutex_allocation[i].len() {
+                    process_inner.mutex_allocation[i].resize(m_mutex, 0);
+                }
+            }
+            while process_inner.mutex_need.len() < n {
+                process_inner.mutex_need.push(Vec::with_capacity(m_mutex));
+            }
+            for i in 0..n {
+                if m_mutex > process_inner.mutex_need[i].len() {
+                    process_inner.mutex_need[i].resize(m_mutex, 0);
+                }
+            }
+            if m_mutex > process_inner.mutex_work.len() {
+                process_inner.mutex_work.resize(m_mutex, 0);
+            }
+            // sem
+            while process_inner.sem_allocation.len() < n {
+                process_inner.sem_allocation.push(Vec::with_capacity(m_sem));
+            }
+            for i in 0..n {
+                if m_sem > process_inner.sem_allocation[i].len() {
+                    process_inner.sem_allocation[i].resize(m_sem, 0);
+                }
+            }
+            while process_inner.sem_need.len() < n {
+                process_inner.sem_need.push(Vec::with_capacity(m_sem));
+            }
+            for i in 0..n {
+                if m_sem > process_inner.sem_need[i].len() {
+                    process_inner.sem_need[i].resize(m_sem, 0);
+                }
+            }
+            if m_sem > process_inner.sem_work.len() {
+                process_inner.sem_work.resize(m_sem, 0);
+            }
+        }
+    }
+    /// 将对应的全部设置为0
+    pub fn thread_vec_clear(&self, tid: usize) {
+        let mut process_inner = self.inner_exclusive_access();
+        if process_inner.deadlock_detection_enabled {
+            process_inner.mutex_allocation[tid].fill(0);
+            process_inner.mutex_need[tid].fill(0);
+            process_inner.sem_allocation[tid].fill(0);
+            process_inner.sem_need[tid].fill(0);
+        }
+    }
+    pub fn new_mutex(&self, mutex_id: isize) {
+        self.vec_sync();
+        let mut process_inner = self.inner_exclusive_access();
+        if process_inner.deadlock_detection_enabled {
+            process_inner.mutex_work[mutex_id as usize] = 1;
+        }
+    }
+    pub fn new_semaphore(&self, sem_id: usize, count: usize) {
+        self.vec_sync();
+        let mut process_inner = self.inner_exclusive_access();
+        if process_inner.deadlock_detection_enabled {
+            process_inner.sem_work[sem_id] = count;
+        }
     }
 }

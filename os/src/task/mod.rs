@@ -86,6 +86,23 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     task_inner.res = None;
     // here we do not remove the thread since we are still using the kstack
     // it will be deallocated when sys_waittid is called
+    // 回收allocation给work
+    let mut process_inner = process.inner_exclusive_access();
+    if process_inner.deadlock_detection_enabled {
+        for i in 0..process_inner.mutex_list.len() {
+            if process_inner.mutex_allocation[tid][i] > 0 {
+                process_inner.mutex_work[i] += process_inner.mutex_allocation[tid][i];
+            }
+        }
+        for i in 0..process_inner.semaphore_list.len() {
+            if process_inner.sem_allocation[tid][i] > 0 {
+                process_inner.sem_work[i] += process_inner.sem_allocation[tid][i];
+            }
+        }
+    }
+
+    drop(process_inner);
+    process.thread_vec_clear(tid);
     drop(task_inner);
 
     // Move the task to stop-wait status, to avoid kernel stack from being freed
