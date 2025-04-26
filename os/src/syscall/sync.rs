@@ -87,6 +87,7 @@ pub fn sys_mutex_lock(mutex_id: usize) -> isize {
             process_inner.mutex_work[mutex_id]
         );
         if !process_inner.is_safe_state(1) {
+            process_inner.mutex_need[tid][mutex_id] -= 1;
             return -0xdead;
         }
     }
@@ -220,6 +221,7 @@ pub fn sys_semaphore_down(sem_id: usize) -> isize {
     if process_inner.deadlock_detection_enabled {
         process_inner.sem_need[tid][sem_id] += 1;
         if !process_inner.is_safe_state(2) {
+            process_inner.sem_need[tid][sem_id] -= 1;
             return -0xdead;
         }
     }
